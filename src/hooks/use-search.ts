@@ -20,8 +20,8 @@ export function useSearch() {
   useEffect(() => {
     // Load search index
     fetch('/_search/index.json')
-      .then((res) => res.json())
-      .then((data: SearchIndexItem[]) => {
+      .then((res) => res.json() as Promise<SearchIndexItem[]>)
+      .then((data) => {
         setIndex(data)
         const fuseInstance = new Fuse(data, {
           keys: [
