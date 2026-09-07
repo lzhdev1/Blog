@@ -1,0 +1,213 @@
+---
+title: "AI Agent 开发，和我想象中的不太一样"
+date: "2026-09-06"
+summary: "从 chatbot 到 agent，从 demo 到生产，中间隔着的不是技术差距，而是架构、工程化和对「自主性」的正确理解。这篇聊聊 Agent 开发的真实面貌。"
+tags: ["Agent", "LLM", "LangGraph", "ReAct", "MCP"]
+categories: ["AI", "架构"]
+image: "/images/agent-cover.png"
+draft: false
+---
+
+# AI Agent 开发，和我想象中的不太一样
+
+2025 年大家都在谈 Agent，好像给 chatbot 加几个工具，它就升级成 Agent 了。真正做过才知道，Agent 和 chatbot 几乎是两种生物——chatbot 是问答机器，Agent 是能自己决定下一步做什么的自主系统。
+
+这篇文章聊聊我开发 Agent 的一些体会，不罗列框架 API，重点说思路。
+
+## Agent 到底是什么
+
+一个最朴素的理解：
+
+> Agent = LLM（大脑） + Tools（手脚） + Memory（记忆） + Planning（规划）
+
+LLM 负责理解和决策，Tools 负责和真实世界交互，Memory 让它能记住之前发生了什么，Planning 让它能拆解复杂任务。四样缺一不可。
+
+很多人只关注 LLM 和 Tools，结果做出来的 Agent 一遇到长任务就丢三落四，或者一条路走到黑不知道变通。
+
+## Chatbot 和 Agent 的根本区别
+
+| | Chatbot | Agent |
+|---|---|---|
+| 控制流 | 单轮或固定流程 | **动态决策** |
+| 工具使用 | 不用或固定 | **按需选择** |
+| 适应性 | 低 | 高 |
+| 适用场景 | 客服、问答 | 研究、编程、分析 |
+
+一个核心判断：**如果流程是确定的，别用 Agent**。比如"用户提交请假单→审批→通知"这种事，写 workflow 比 Agent 稳十倍。Agent 适合的是"不知道该走哪条路"的场景。
+
+## ReAct：最经典的 Agent 模式
+
+ReAct 的核心思想是"想一下、做一下、看一下"：
+
+```
+用户：北京 2026 年 GDP 是多少？
+
+[Thought] 需要查最新数据
+[Action] search_web("北京 2026 GDP")
+[Observation] 根据统计局数据...
+[Thought] 有答案了
+[Answer] 北京 2026 年 GDP 为...
+```
+
+写起来很简单：
+
+```python
+from langgraph.prebuilt import create_react_agent
+from langchain_openai import ChatOpenAI
+
+agent = create_react_agent(
+    ChatOpenAI(model="gpt-4o"),
+    tools=[search_web, calculator],
+)
+```
+
+但 ReAct 有局限：每一步都让 LLM 重新决策，token 消耗大、速度慢，而且容易陷入死循环。复杂任务上，它不够用。
+
+## 更复杂的 Agent 模式
+
+**Plan-and-Execute**：先让 LLM 列计划，再一步步执行，执行完还能根据结果改计划。适合研究报告、旅行规划这种"长链条"任务。
+
+**Reflection**：让 Agent 自己审视自己的输出，发现问题就迭代修改。在写作、代码生成场景特别有用。
+
+**Multi-Agent**：多个专长不同的 Agent 协作，比如一个负责调研、一个负责写代码、一个负责写文档，由一个 Supervisor 协调。这种结构最接近真实团队的工作方式。
+
+## 框架怎么选
+
+框架很多，主流的几个各有特点：
+
+**LangGraph** 是目前的"生产首选"。它把 Agent 建模成图，节点是函数、边是状态转移，控制流非常清晰。持久化、human-in-the-loop、暂停恢复都是一等公民。缺点是学习曲线比较陡。
+
+**AutoGen** 来自微软，强调多 Agent 之间的自然语言对话协作。研究场景用的多。
+
+**CrewAI** 的 API 非常直觉，"角色-任务-团队"一套概念很顺。但复杂场景下控制力不够。
+
+**OpenAI Agents SDK** 轻量、Handoff 机制设计得漂亮，适合快速原型。
+
+**Claude Agent SDK** 是 Anthropic 最近推出的，强调安全性，适合对权限要求高的场景。
+
+我的选择是：**默认 LangGraph，原型用 OpenAI SDK，研究场景试 AutoGen**。
+
+## 工具：Agent 能力的天花板
+
+Agent 多聪明，很大程度上取决于它有哪些工具可用。工具设计这件事，远比想象中重要。
+
+好的工具：
+- 名字清晰，`search_web` 而不是 `tool1`
+- docstring 准确描述了什么时候用、什么时候不用
+- 参数有严格 schema
+- 错误信息有指导意义（不要只返回 "error"）
+
+坏的工具直接把 Agent 变傻。模型面对一堆模糊的工具描述，决策质量会断崖式下跌。
+
+**一个实用的上限**：一个 Agent 的工具数最好别超过 20 个。再多，模型选择困难，出错率飙升。如果业务需要更多工具，要么拆成多个 Agent，要么做工具分层。
+
+## MCP：工具集成的新标准
+
+MCP（Model Context Protocol）是 Anthropic 推出的开放协议，专门解决"AI 应用怎么接工具"这个问题。过去 M 个应用接 N 个工具，要写 M×N 套代码；有了 MCP，变成 M+N。
+
+```
+┌──────────┐   MCP    ┌──────────────┐   API   ┌───────────┐
+│ AI App   │◄────────►│ GitHub MCP   │◄───────►│ GitHub    │
+│ (Client) │          │ Server       │         └───────────┘
+└──────────┘          └──────────────┘
+```
+
+MCP 把工具分为三类：**Tools**（可调用的函数）、**Resources**（可读取的数据）、**Prompts**（可复用的提示词模板）。
+
+在 LangGraph 里接 MCP 工具非常方便：
+
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+async with MultiServerMCPClient({
+    "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."},
+    },
+}) as client:
+    agent = create_react_agent(chat, client.get_tools())
+```
+
+社区已经有大量现成的 MCP Server（GitHub、Postgres、Slack、filesystem 等等），基本拿来就用。这块详细可以看本博客另一篇 [MCP 完全指南](/posts/mcp-complete-guide)。
+
+## 生产级 Agent 的工程化
+
+demo 和生产之间，差着几个量级。
+
+**可靠性**：Agent 调的工具会失败、LLM 会超时。每一步都要有 timeout、retry、fallback。`graph.compile` 时设 `recursion_limit`，防止 Agent 陷入死循环。
+
+**可观测性**：Agent 是"黑盒中的黑盒"，不追踪就不知道它在干嘛。LangSmith 是事实标准，每个节点的决策、每次工具调用都可视化。
+
+**评估**：没有评估的 Agent 就是玩具。从第一天起就要有评测集——给一组任务，看 Agent 完成率多少、平均多少步完成、出错率多高。
+
+**安全**：Agent 有工具，意味着它能做"真事"——发邮件、下单、删文件。必须：
+- 最小权限原则
+- 工具参数严格校验
+- 代码执行必须沙箱化
+- 关键操作人工确认
+
+Human-in-the-loop 在 LangGraph 里很优雅：
+
+```python
+app = graph.compile(
+    checkpointer=MemorySaver(),
+    interrupt_before=["sensitive_tool"]
+)
+```
+
+执行到 `sensitive_tool` 之前会自动暂停，等人类确认。
+
+## 一个实战案例
+
+做个研究 Agent：给一个问题，它拆解成子问题、分别搜索、整合写报告。
+
+```python
+from typing import TypedDict
+from langgraph.graph import StateGraph, END
+
+class State(TypedDict):
+    question: str
+    sub_questions: list[str]
+    findings: dict[str, str]
+    report: str
+
+def planner(state):
+    subs = chat.invoke(f"把这个问题拆解为 3-5 个子问题：{state['question']}")
+    return {"sub_questions": parse_list(subs.content)}
+
+def researcher(state):
+    findings = {q: search_web(q) for q in state["sub_questions"]}
+    return {"findings": findings}
+
+def writer(state):
+    report = chat.invoke(f"基于以下发现写报告：\n{state['findings']}")
+    return {"report": report.content}
+
+graph = StateGraph(State)
+graph.add_node("planner", planner)
+graph.add_node("researcher", researcher)
+graph.add_node("writer", writer)
+graph.set_entry_point("planner")
+graph.add_edge("planner", "researcher")
+graph.add_edge("researcher", "writer")
+graph.add_edge("writer", END)
+
+agent = graph.compile()
+```
+
+简单但有效。真正的难点不在代码，在于 prompt 设计和工具选型。
+
+## 几条心得
+
+**不要过度设计**。能用 workflow 解决的就别上 Agent。Agent 的动态性是优势也是负担——成本高、延迟大、不稳定。
+
+**Prompt 决定上限**。Agent 的能力 80% 来自 system prompt 设计。模型选对了只是及格线，prompt 写得好才是加分项。
+
+**工具设计是关键**。好的工具描述能让模型"知道什么时候该用"，差的描述会让 Agent 反复用错工具。
+
+**渐进式构建**。先做最简 ReAct，再逐步加 Memory、加多工具、加 Multi-Agent。不要一上来就搭一个巨型图。
+
+**评估驱动**。每天跑一次评测集，看指标变化。没有数字支撑的"优化"都是自我安慰。
+
+Agent 是 LLM 应用皇冠上的明珠，也是最难摘的那一颗。希望这篇能帮你少走一点弯路 🌊

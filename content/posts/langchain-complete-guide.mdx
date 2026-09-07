@@ -1,0 +1,262 @@
+---
+title: "我用了一年 LangChain，这是值得知道的所有事"
+date: "2026-09-05"
+summary: "从第一次踩坑到把它用在生产环境，我把 LangChain 的核心概念、常用模块、容易忽视的坑和真正有效的最佳实践，都写在这篇了。"
+tags: ["LangChain", "LLM", "RAG", "Agent", "Python"]
+categories: ["框架", "经验"]
+image: "/images/langchain-cover.png"
+draft: false
+---
+
+# 我用了一年 LangChain，这是值得知道的所有事
+
+> *"The framework for building context-aware reasoning applications."*
+
+如果用一句话概括 LangChain 是什么——它是一套用"可组合的积木"去调用大模型能力的标准件库。听起来很美，用起来却不总是那么顺。这篇文章不是官方文档的搬运，而是我在生产环境里摸爬滚打一年，总结下来的"真正该知道的事"。
+
+## 先搞清楚 LangChain 现在长什么样
+
+很多教程还停留在 `LLMChain` 时代，其实 LangChain 的生态早就分家了：
+
+- `langchain-core`：基础抽象，`Runnable` 接口、LCEL 都在这
+- `langchain`：主框架，Chains、Agents、Retrievers、Memory
+- `langchain-community`：第三方集成
+- `langgraph`：做有状态多步 Agent 的新框架
+- `langserve`：把 Chain 部署成 API
+- `LangSmith`：追踪、评估、Prompt 管理平台
+
+一个关键观念转变：**现在写 LangChain，就是写 LCEL（LangChain Expression Language）**。老式的 `LLMChain` 已经被淘汰，所有新代码都应该用 `|` 管道符把组件串起来。
+
+## Model I/O：和模型打交道的正确姿势
+
+和 LLM 打交道分三件事：输入怎么构造、模型怎么调、输出怎么解析。
+
+```python
+from langchain_openai import ChatOpenAI
+
+chat = ChatOpenAI(model="gpt-4o", temperature=0.7)
+```
+
+`ChatOpenAI` 是现在的主流，老的 `OpenAI`（文本补全型）基本不用了。模型吃的不是字符串，而是消息列表：
+
+```python
+from langchain_core.messages import SystemMessage, HumanMessage
+
+chat.invoke([
+    SystemMessage(content="你是 Python 老手。"),
+    HumanMessage(content="讲讲 GIL。"),
+])
+```
+
+输出解析是很多人忽略的点。让模型返回 JSON 不是光在 prompt 里说"请返回 JSON"就行的，更稳的做法是用 `with_structured_output`：
+
+```python
+from pydantic import BaseModel, Field
+
+class Review(BaseModel):
+    title: str
+    score: float = Field(description="0-10 分")
+    verdict: str
+
+structured_chat = chat.with_structured_output(Review)
+structured_chat.invoke("评一下《奥本海默》")
+```
+
+这一步直接用上了 OpenAI 的 function calling，返回的就是 Pydantic 对象，比正则抠 JSON 优雅一万倍。
+
+## Prompt：别只会 from_template
+
+`PromptTemplate` 谁都会，但稍微复杂点的场景就该上 `ChatPromptTemplate`：
+
+```python
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "你是翻译官。"),
+    MessagesPlaceholder(variable_name="history"),
+    ("human", "{input}"),
+])
+```
+
+`MessagesPlaceholder` 是做多轮对话的关键，它能把历史消息列表"塞"到模板里。如果要做 few-shot，还有专门的 `FewShotChatMessagePromptTemplate`，比手拼字符串清爽很多。
+
+## LCEL：一切的骨架
+
+LCEL 不是语法糖，是 LangChain 的现代骨架。只要组件都实现了 `Runnable` 接口（`invoke` / `stream` / `batch`），就能用 `|` 串起来，并且自动获得流式、异步、批量、重试、追踪等能力。
+
+```python
+from langchain_core.runnables import RunnablePassthrough
+
+chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | prompt
+    | chat
+    | StrOutputParser()
+)
+```
+
+几个常用原语：
+
+- `RunnablePassthrough`：把输入原样透传
+- `RunnableParallel`：并行跑多个分支
+- `RunnableLambda`：把普通函数包装成 Runnable
+- `RunnableBranch`：条件路由
+- `RunnableWithFallbacks`：失败时降级
+
+写 RAG 链的时候，几乎离不开这几个东西的组合。
+
+## RAG：最成熟的应用范式
+
+RAG 是 LangChain 最拿得出手的能力。标准流程是：
+
+```
+文档 → 切块 → Embedding → 向量库 → 检索 → 拼进 prompt → LLM
+```
+
+写起来大概是：
+
+```python
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+
+loader = PyPDFLoader("paper.pdf")
+docs = loader.load()
+
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+chunks = splitter.split_documents(docs)
+
+vectorstore = FAISS.from_documents(chunks, OpenAIEmbeddings())
+retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+```
+
+不过真实的 RAG 远比这复杂。Naive RAG 在真实业务里几乎都不好使，下面是几个真正有用的进阶策略：
+
+- **Multi-Query**：让 LLM 把一个问题改写成多个版本，并行检索后合并
+- **Parent-Child Retriever**：用小块检索，返回包含它的大块上下文
+- **Contextual Compression**：检索完再用一次 LLM 把不相关内容压缩掉
+- **Self-Query**：从用户问题中提取结构化过滤条件
+- **Rerank**：检索后用 cross-encoder 重排
+
+```python
+from langchain.retrievers.multi_query import MultiQueryRetriever
+
+retriever = MultiQueryRetriever.from_llm(
+    vectorstore.as_retriever(), chat
+)
+```
+
+一个经验：**切块的参数比向量库选型更重要**。`chunk_size`、`chunk_overlap`、分隔符顺序，这三样调好了效果能差一大截。
+
+## Memory：正在被 LangGraph 取代
+
+LangChain 有一系列 Memory 类：`ConversationBufferMemory`、`ConversationBufferWindowMemory`、`ConversationSummaryMemory`……理论上它们能为 Chain 提供对话历史。
+
+但说实话，这套模块现在有点尴尬。新项目更推荐用 **LangGraph 的 Checkpointer** 做持久化，它更灵活，对复杂 Agent 场景更友好。如果你还在用 `ConversationBufferMemory`，可以考虑迁移了。
+
+## Tools 和 Agent：让 LLM 有手脚
+
+Agent 的核心是"工具"。定义工具现在推荐用 `@tool` 装饰器：
+
+```python
+from langchain_core.tools import tool
+
+@tool
+def search_web(query: str) -> str:
+    """在互联网上搜索给定查询并返回相关结果。"""
+    return fake_search(query)
+
+@tool
+def calculator(expression: str) -> str:
+    """计算数学表达式，例如 '2 + 2'。"""
+    return str(eval(expression))
+```
+
+注意 docstring 不是装饰，它是模型判断"什么时候用这个工具"的关键依据。写得越清晰，Agent 用得越准。
+
+创建 Agent 推荐用 LangGraph 的 `create_react_agent`：
+
+```python
+from langgraph.prebuilt import create_react_agent
+
+agent = create_react_agent(chat, tools=[search_web, calculator])
+
+result = agent.invoke({
+    "messages": [HumanMessage("北京今天天气？")]
+})
+```
+
+## LangGraph：真正的生产级 Agent 框架
+
+LangGraph 是 LangChain 团队推出的下一代 Agent 框架，把 Agent 建模成**有向图**。节点是函数，边是状态转移，整个图跑起来就是一个 Agent。
+
+为什么需要它？因为 ReAct 那种单循环在很多业务场景不够用。你需要"规划-执行-反思"的闭环、需要多 Agent 协作、需要在关键节点让人类介入——这些 LangGraph 都能做。
+
+```python
+from typing import TypedDict
+from langgraph.graph import StateGraph, END
+
+class State(TypedDict):
+    query: str
+    plan: str
+    research: str
+    approved: bool
+
+def planner(state):
+    return {"plan": chat.invoke(f"为 {state['query']} 制定计划")}
+
+def researcher(state):
+    return {"research": search(state["plan"])}
+
+# ... 组装成图
+```
+
+`Checkpointer` 让图可以暂停、恢复、回溯，这是做 human-in-the-loop 的基石。
+
+## 生产环境里真正重要的几件事
+
+框架用法看文档就行，这里说几个文档里不太讲、但实际开发绕不过去的事。
+
+**第一，一定要接 LangSmith。** 只要设三个环境变量，所有调用、token 消耗、每一步输入输出都在 Dashboard 上看得到。出 bug 时能救命。
+
+```python
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = "ls__xxx"
+os.environ["LANGCHAIN_PROJECT"] = "my-app"
+```
+
+**第二，给 LLM 调用加重试和降级。** LLM API 会挂、会超时、会限流，生产环境必须有 `with_retry`：
+
+```python
+chain = prompt | chat.with_retry(stop_after_attempt=3) | parser
+```
+
+**第三，缓存能省钱。** 同样输入同样输出是常态，接个 Redis 缓存：
+
+```python
+from langchain.globals import set_llm_cache
+from langchain_community.cache import RedisCache
+
+set_llm_cache(RedisCache(redis_url="redis://localhost:6379"))
+```
+
+**第四，评估要早做，不要等产品上线了再补。** LangSmith 有专门的 evaluation 模块，越早建立测试集，后面优化越有依据。
+
+## 一些个人看法
+
+LangChain 不是银弹。它被诟病"过度抽象"不是没有道理——很多简单场景直接用 OpenAI SDK 反而更快更清晰。
+
+但它也有不可替代的价值：当你需要 RAG、需要 Agent、需要把一堆组件拼起来时，LangChain 提供的标准抽象能省下巨量重复工作。
+
+我的建议是：**简单场景直接用原生 SDK，复杂场景再上 LangChain**。别为了用框架而用框架。
+
+如果要入门，建议路线：
+
+- 第一周：LCEL + Prompt + Output Parsers
+- 第二周：文档加载 + 切块 + 向量库
+- 第三周：RAG 全链路
+- 第四周：Tools + Agent + LangGraph
+- 第五周：LangSmith + 评估 + 部署
+
+愿你在 LLM 应用开发的路上，少踩坑，多产出 🚀

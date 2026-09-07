@@ -1,0 +1,38 @@
+---
+title: "图文Blog生成平台"
+description: "基于多智能体编排的AI文章创作平台，用户输入选题，多Agent协作完成标题生成、大纲生成、正文撰写、智能配图任务，关键节点设置人工干预（Human-in-the-loop），前端通过SSE实时推送各阶段执行进度。"
+tags: ["LangGraph", "PostgreSQL", "FastAPI", "Docker Compose", "Next.js", "React", "Redis"]
+github: "https://github.com/lzhdev1/Article_generate.git"
+detailed: |
+  ## 项目概述
+
+  这是一个基于多智能体（Multi-Agent）编排的 AI 文章创作平台。用户只需输入一个选题，系统便会自动调度多个专业 Agent 协作完成从标题构思、大纲生成、正文撰写到智能配图的全流程创作任务。
+
+  关键创作节点设置了 **Human-in-the-loop** 人工干预机制，用户可以在大纲确认、内容审核等环节介入调整，确保生成内容符合预期。前端通过 **SSE（Server-Sent Events）** 实时推送各阶段的执行进度，让用户全程掌握创作动态。
+
+  ## 核心特性
+
+  - **多 Agent 协作架构**：基于 LangGraph 构建有状态的 Agent 工作流，每个 Agent 专注于特定创作环节，分工明确、职责清晰
+  - **Human-in-the-loop**：利用 LangGraph 的 `interrupt()` + `Command()` 机制，在关键决策点暂停执行流，等待用户确认后继续
+  - **SSE 实时进度推送**：通过 FastAPI + Uvicorn 构建高性能异步 API 服务，将 Agent 的每一步执行状态实时推送至前端
+  - **智能配图引擎**：根据文章语义自动生成匹配的配图建议，提升文章的视觉表现力
+  - **工程化部署**：Docker Compose 一键编排全部服务（API、数据库、缓存），开箱即用
+
+  ## 技术架构
+
+  | 模块 | 技术选型 | 说明 |
+  |------|---------|------|
+  | 前端 | Next.js + React | 现代化 SSR/CSR 混合渲染 |
+  | 后端 API | FastAPI + Uvicorn | 高性能异步 HTTP/SSE 服务 |
+  | Agent 编排 | LangGraph | 有状态多智能体工作流引擎 |
+  | 关系数据库 | PostgreSQL | 文章数据、用户数据持久化存储 |
+  | 缓存/队列 | Redis | 任务队列与会话状态缓存 |
+  | 部署方案 | Docker Compose | 容器化编排，一键部署 |
+
+  ## 项目亮点
+
+  1. **可中断的长流程工作流**：不同于一次性生成，用户可以在任意关键节点审阅并修改中间产物，实现真正的"人机共创"
+  2. **全链路可观测**：从选题到成稿，每个 Agent 的思考过程、工具调用、中间结果都通过 SSE 实时呈现
+  3. **解耦的微服务架构**：前端、API、数据库、缓存各自独立容器，可独立扩展和维护
+  4. **灵活的主题适配**：支持任意领域的选题输入，Agent 能够自适应调整内容风格和知识结构
+---

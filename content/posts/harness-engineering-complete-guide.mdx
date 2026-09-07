@@ -1,0 +1,331 @@
+---
+title: "Harness Engineering：让 LLM 应用真正跑得稳的那只手"
+date: "2026-09-07"
+summary: "LLM 应用从 demo 到生产，中间差的不是模型能力，而是 harness——评测、追踪、反馈、部署、安全这一整套支撑系统。这篇系统聊聊这事。"
+tags: ["Harness Engineering", "LLMOps", "AI", "工程化", "评估"]
+categories: ["AI", "工程"]
+image: "/images/harness-cover.png"
+draft: false
+---
+
+# Harness Engineering：让 LLM 应用真正跑得稳的那只手
+
+> *"The model is the engine, but the harness is what makes it a car."*
+
+做 LLM 应用的人，大多都有过这样的经历：demo 跑起来效果惊艳，一上生产就翻车——答非所问、延迟爆炸、成本失控、出了 bug 完全无从下手。
+
+问题不在模型，在 harness。
+
+Harness 是"脚手架"的意思。Harness Engineering 就是给 LLM 搭脚手架的工程学——评测、追踪、反馈、部署、安全、成本控制——让 LLM 应用从实验品变成可靠的产品。
+
+## 一个残酷的事实
+
+LLM 应用的 80% 工作量不在模型，在 harness。
+
+模型就是个函数 `f(x) → y`。但要让这个函数在生产里跑得稳、跑得好、跑得久，需要一整套支撑系统：
+
+```
+┌──────────────────────────────────────────┐
+│              Harness                      │
+│                                          │
+│   Eval ◄──► Tracing ◄──► Feedback       │
+│     │            │           │           │
+│     └────────────┴───────────┘           │
+│                  │                        │
+│              Deployment                   │
+│                  │                        │
+│              Monitoring                   │
+│                  │                        │
+│              Cost Control                 │
+└──────────────────────────────────────────┘
+                    │
+                    ▼
+               ┌────────┐
+               │  LLM   │
+               └────────┘
+```
+
+## Harness 都包括什么
+
+### 评测系统：没有评测就没有优化
+
+这是 harness 里最重要的一环。没有评测，所有的"优化"都是凭感觉。
+
+评测分几类：
+
+**离线评测**——用静态数据集打分。准备一组"问题 + 标准答案"，跑一遍看结果。RAGAS、LangSmith Eval 都能做。
+
+**在线评测**——从生产流量里采样评测。更贴近真实表现。
+
+**LLM-as-Judge**——用另一个 LLM 来打分。成本低，但有偏差，适合辅助。
+
+**人类评测**——真人标注。最准，但最贵。
+
+**对抗测试**——红队攻击，看模型的 robustness。Garak、Promptfoo 这类工具专门做这个。
+
+评测 RAG 应用时有几个核心维度：
+
+- **Context Precision**：检索出来的内容相关吗
+- **Context Recall**：该检索的都检索到了吗
+- **Faithfulness**：LLM 真的基于上下文回答了吗，还是瞎编
+- **Answer Relevance**：答案切题吗
+- **Answer Correctness**：答案对吗
+
+写起来像这样：
+
+```python
+from langsmith.evaluation import evaluate
+
+def accuracy(run, example):
+    return {
+        "score": compute_similarity(
+            run.outputs["answer"],
+            example.outputs["expected"]
+        )
+    }
+
+results = evaluate(
+    lambda inputs: rag_chain.invoke(inputs["question"]),
+    data="kb-qa-dataset",
+    evaluators=[accuracy, faithfulness, relevance],
+)
+```
+
+### 追踪系统：看见问题是解决的第一步
+
+Agent 是"黑盒中的黑盒"。不追踪就不知道它在干嘛。
+
+追踪分几个层次：应用层（用户请求/响应）、编排层（Agent 决策、Skill 调用）、组件层（Retriever、LLM、Tool）、基础设施层（网络、数据库）。
+
+LangSmith 是事实标准。三个环境变量一设，所有调用自动追踪：
+
+```python
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_PROJECT"] = "my-app"
+```
+
+每个节点的输入输出、token 消耗、延迟、错误栈都在 Dashboard 上看得清清楚楚。出 bug 时能救命。
+
+不开 LangSmith 的话，自己用 OpenTelemetry 或者写个简单的 tracer 也行。关键是**一定要留痕**。
+
+### 反馈系统：让应用越用越好
+
+用户反馈是改进模型和应用的金矿。
+
+反馈有几种收集方式：直接的 👍/👎、星级评分、用户修正、A/B 测试、隐式行为（点击、停留、复制）。
+
+```python
+@app.post("/feedback")
+async def collect_feedback(trace_id: str, score: int, comment: str = None):
+    await db.feedback.insert({
+        "trace_id": trace_id,
+        "score": score,
+        "comment": comment,
+        "created_at": datetime.now(),
+    })
+    if score <= 2:
+        await alert_team(trace_id)
+```
+
+把反馈闭环打通，模型和应用就能持续进化。
+
+### 部署流水线：Prompt 改动也要走 CI/CD
+
+Prompt 改了直接上生产？太野了。
+
+Prompt 应该像代码一样管理：
+
+```
+Prompt 修改 → Git Commit → 自动评测 → 通过则 staging 部署 → 灰度发布 → 全量
+```
+
+LangServe 能把 LangChain 链直接部署成 REST API：
+
+```python
+from langserve import add_routes
+from fastapi import FastAPI
+
+app = FastAPI()
+add_routes(app, rag_chain, path="/rag")
+```
+
+部署后自动有 `/rag/invoke`、`/rag/batch`、`/rag/stream` 等接口，还自带 playground。
+
+### 安全与合规：生产的底线
+
+LLM 应用的安全风险很特殊：prompt 注入、数据泄漏、幻觉、越权操作。
+
+防护分几层：
+
+**输入防护**——过滤有害输入
+**输出防护**——过滤有害输出
+**权限控制**——谁能调用什么工具
+**审计日志**——行为可追溯
+**合规审查**——GDPR、数据隐私
+
+Guardrails 是个不错的库：
+
+```python
+from guardrails import Guard, OnFailAction
+from guardrails.validators import ToxicLanguage, PIIFilter
+
+guard = Guard().use_many(
+    ToxicLanguage(on_fail=OnFailAction.EXCEPTION),
+    PIIFilter(on_fail=OnFailAction.REASK),
+)
+
+def safe_llm_call(prompt):
+    guard.validate(prompt)
+    response = chat.invoke(prompt)
+    guard.validate(response)
+    return response
+```
+
+Agent 场景下安全尤其重要——Agent 有工具意味着它能做"真事"，发邮件、下单、删文件。最小权限、沙箱执行、关键操作人工确认，一个都不能少。
+
+### 成本控制：LLM 调用是真金白银
+
+很多人 demo 阶段不关心成本，等账单来了才发现炸了。
+
+成本优化有几招：
+
+**缓存**——相同输入直接返回缓存结果
+**压缩**——用小模型把长上下文压短
+**降级**——简单问题用便宜模型
+**批量**——Batch API 通常打五折
+**Prompt 精简**——减少冗余描述
+**限制**——用户配额、速率限制
+
+```python
+def llm_router(task: str):
+    if is_simple_task(task):
+        return "gpt-4o-mini"      # 便宜
+    elif needs_reasoning(task):
+        return "gpt-4o"           # 强
+    elif needs_creative(task):
+        return "claude-opus"      # 创意强
+```
+
+建个成本 Dashboard，按模型、按功能、按用户拆解。看到数据才知道哪里能省。
+
+### 版本管理：Prompt、数据、模型都要版本化
+
+Prompt 改了改回来找不到原版？评测集换了之后结果没法对比？都是版本管理没做好。
+
+所有关键资产都要版本化：
+- Prompt 模板
+- 评测数据集
+- 模型版本
+- 工具版本
+- 配置参数
+- Skill 定义
+
+LangSmith Hub 提供 Prompt 的版本管理：
+
+```python
+from langchain import hub
+
+prompt = hub.pull("my-org/research-agent:v1.2.3")
+hub.push("my-org/research-agent:v1.3.0", new_prompt)
+```
+
+## 几个架构模式
+
+### 评估驱动开发
+
+先写评测集，再写实现。每次改进必须有评测佐证。
+
+```
+需求 → 写评测集 → 写 Prompt/代码 → 跑评测 → 达标？
+                                       ↓ 不达标
+                                    迭代
+```
+
+这是 harness engineering 的核心方法论。
+
+### 可观测性优先
+
+每个 LLM 调用都应该可追踪。黑盒是优化最大的敌人。
+
+### 渐进式复杂度
+
+别一上来就搭完整 harness。按需演进：
+
+- Phase 1：单 Prompt + 控制台日志
+- Phase 2：+ LangSmith 追踪
+- Phase 3：+ 评测集 + CI/CD
+- Phase 4：+ 反馈系统 + A/B 测试
+- Phase 5：+ 自动优化 + 安全护栏
+
+每一步都有明确价值，不会过度工程化。
+
+## 主流工具怎么选
+
+**LangSmith**：最成熟，全功能，付费。生产环境首选。
+
+**LangFuse**：开源的 LangSmith 替代，可以自托管，兼容 OpenTelemetry。
+
+**Arize Phoenix**：专注 LLM 可观测性，可视化做得好。
+
+**Promptfoo**：专注评测和红队测试，CI 集成友好。
+
+**RAGAS**：RAG 专用评测框架，指标全面。
+
+选型建议：生产环境直接 LangSmith，想自托管用 LangFuse，专注评测用 Promptfoo，RAG 场景搭配 RAGAS。
+
+## 工程化最佳实践
+
+**建立评测文化**。每个功能上线前必须有评测通过。把评测跑进 CI，指标低于阈值不让合并。
+
+```yaml
+# .github/workflows/eval.yml
+name: LLM Evaluation
+on:
+  pull_request:
+    paths: ['prompts/**', 'src/rag/**']
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Eval
+        run: python eval/run.py
+      - name: Check Threshold
+        run: |
+          accuracy=$(cat eval/results.json | jq '.accuracy')
+          if (( $(echo "$accuracy < 0.85" | bc -l) )); then
+            exit 1
+          fi
+```
+
+**日志即资产**。所有 LLM 交互都要存档，用 structlog 这种结构化日志库，方便后续分析。
+
+**定期故障演练**。LLM 服务挂了怎么办？token 暴涨怎么办？被攻击了怎么办？提前演练，才不会事发时手忙脚乱。
+
+**成本可视化**。建个 Dashboard，每天看一眼。成本突然飙升一定是哪里出问题了。
+
+**文档要跟上**。架构图、评测方法论、追踪指南、安全策略、运维手册——这些文档不是装饰，是团队协作的基础。
+
+## 一些关键指标
+
+系统层面：P50/P95 延迟、可用率、错误率、token 使用量、单查询成本。
+
+质量层面：准确率、忠实度、相关性、用户满意度。
+
+业务层面：任务完成率、获取价值时间、用户留存、ROI。
+
+每个指标都要有阈值，低于阈值就告警。
+
+## 一些体会
+
+做了一年 LLM 应用，越来越觉得 harness 比模型本身更能决定产品的成败。
+
+**评测先行**。没有评测的优化都是盲人摸象。第一天就建立评测集。
+
+**可观测性是底线**。看不见的问题是最大的问题。从第一天起就开追踪。
+
+**演进式设计**。不要一开始就搭全栈 harness，按需长出来。
+
+> *"The model is just the beginning. The harness is the real product."*
+
+愿你能构建出真正可靠的 LLM 应用 🏗️

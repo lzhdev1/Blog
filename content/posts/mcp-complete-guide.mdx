@@ -1,0 +1,350 @@
+---
+title: "MCP：AI 时代的 USB-C 是怎么炼成的"
+date: "2026-09-07"
+summary: "Anthropic 推出的 Model Context Protocol 正在成为 AI 工具集成的事实标准。这篇从协议设计、Server/Client 开发、生态现状到安全实践，把 MCP 讲透。"
+tags: ["MCP", "Agent", "LLM", "Anthropic", "协议"]
+categories: ["协议", "教程"]
+image: "/images/mcp-cover.png"
+draft: false
+---
+
+# MCP：AI 时代的 USB-C 是怎么炼成的
+
+> *"An open standard for connecting AI to data and tools."*
+
+2024 年底 Anthropic 推出 Model Context Protocol（MCP）的时候，大多数人没太在意。一年过去，OpenAI、Google、微软都接入了，社区做出了几百个 MCP Server，MCP 成了 AI 工程领域绕不开的基础设施。
+
+这篇文章把 MCP 从设计原理到实际开发都讲一遍。
+
+## 为什么需要 MCP
+
+在 MCP 之前，AI 应用集成工具的方式非常原始：每个应用自己写一套集成代码。M 个应用 × N 个工具 = M × N 套集成代码。每多一个工具或多一个应用，工作量就爆炸。
+
+MCP 的思路很简单：定义一个标准协议，工具提供方只要写一个 MCP Server，任何 MCP Client 都能接入。集成成本从 M×N 降为 M+N。
+
+和 USB 一个道理。过去每个设备配专用线，现在一根 USB-C 通吃。
+
+## 架构长什么样
+
+MCP 基于 JSON-RPC 2.0，分三个角色：
+
+- **Host**：需要工具的 AI 应用，比如 Claude Desktop、Cursor、你写的 Agent
+- **Client**：Host 里维护 MCP 连接的组件，和 Server 一一对应
+- **Server**：暴露工具/数据的服务端，比如 GitHub、数据库、文件系统
+
+```
+┌──────────┐        ┌─────────────┐        ┌────────────┐
+│   Host   │◄──────►│ MCP Client  │◄──────►│ MCP Server │
+└──────────┘        └─────────────┘        └────────────┘
+```
+
+传输层支持多种模式：
+
+- **stdio**：本地进程，Host 启动 Server，最简单
+- **Streamable HTTP**：远程服务，MCP 2025-03-26 规范主推
+- **SSE**：已被 Streamable HTTP 取代
+- **WebSockets**：实验性
+
+## 三大核心能力
+
+MCP Server 能暴露三类东西：**Tools、Resources、Prompts**。
+
+**Tools** 是 LLM 可调用的函数。比如 GitHub MCP Server 提供 `search_issues`、`create_pr` 这种工具。每个工具有名字、描述、参数 schema，描述写得越清楚，模型用得越准。
+
+```json
+{
+  "name": "search_issues",
+  "description": "在 GitHub 仓库中搜索 issues",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "repo": {"type": "string"},
+      "query": {"type": "string"}
+    },
+    "required": ["repo", "query"]
+  }
+}
+```
+
+**Resources** 是只读数据，类似 REST 的 GET。文件系统的内容、数据库的记录、API 的响应都能作为 resource。适合让模型"读"东西。
+
+**Prompts** 是可复用的提示词模板。Server 提供方可以把常用的 prompt 模板暴露出来，Client 拿来就用。团队共享 prompt、领域专用模板都适合用这个。
+
+## 写一个 MCP Server
+
+### Python 版本
+
+```bash
+pip install mcp
+```
+
+```python
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("demo-server")
+
+@mcp.tool()
+def add(a: int, b: int) -> int:
+    """计算两个数的和"""
+    return a + b
+
+@mcp.tool()
+async def search_web(query: str) -> str:
+    """在网上搜索信息"""
+    return await fake_search(query)
+
+@mcp.resource("config://app")
+def get_config() -> str:
+    """返回应用配置"""
+    return "port: 3000\nenv: production"
+
+@mcp.prompt()
+def review_code(code: str) -> str:
+    """生成代码审查 Prompt"""
+    return f"请审查以下代码：\n\n{code}"
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+几十行代码就搞定一个 Server。类型提示会自动转成 JSON Schema。
+
+### TypeScript 版本
+
+```bash
+npm install @modelcontextprotocol/sdk zod
+```
+
+```typescript
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+
+const server = new McpServer({ name: "demo", version: "1.0.0" });
+
+server.tool(
+  "add",
+  "两数相加",
+  { a: z.number(), b: z.number() },
+  async ({ a, b }) => ({
+    content: [{ type: "text", text: String(a + b) }],
+  })
+);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+Python 和 TypeScript 是 MCP 的"一等公民"，SDK 都最完善。其他语言（Go、Rust、Java）也有社区维护的 SDK。
+
+## 在 Agent 中接入 MCP
+
+用 LangChain 的 MCP Adapters，接入过程非常顺滑：
+
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.prebuilt import create_react_agent
+from langchain_openai import ChatOpenAI
+
+async with MultiServerMCPClient({
+    "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."},
+    },
+    "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"],
+    },
+}) as client:
+    agent = create_react_agent(
+        ChatOpenAI(model="gpt-4o"),
+        client.get_tools(),
+    )
+
+    result = await agent.ainvoke({
+        "messages": [("user", "列出 anthropics/mcp 仓库的最近 5 个 issues")]
+    })
+```
+
+Agent 自动获得了 GitHub 和文件系统的全部能力，不需要写任何胶水代码。
+
+## 配置 Claude Desktop
+
+如果你用 Claude Desktop，配置 MCP Server 就是在配置文件里写一段 JSON：
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/data"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."
+      }
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
+    }
+  }
+}
+```
+
+重启 Claude Desktop，这些工具就能用了。
+
+## 生态现状
+
+MCP 的生态发展速度超出了所有人的预期。
+
+**官方 Server** 覆盖了最常用的场景：filesystem、GitHub、Postgres、SQLite、Brave Search、Slack、Memory 等。
+
+**社区 Server** 更是百花齐放：Puppeteer（浏览器自动化）、Docker、Kubernetes、Notion、Linear、Sentry、Redis 等等，几乎你能想到的工具都有人做了 MCP Server。
+
+**MCP Registry (mcp.run)** 在 2025 年上线，成了 Server 的官方分发平台，像 npm 之于 Node.js。装一个 Server 就是一行命令：
+
+```bash
+npx @anthropic/mcp-install @modelcontextprotocol/server-github
+```
+
+## 一些高级特性
+
+### Sampling：Server 反向调用 LLM
+
+MCP 里有个很有意思的设计叫 Sampling——Server 可以请求 Host 调用 LLM 完成某个任务。这意味着 Server 不需要自己托管 LLM，就能在工具执行过程中用到模型能力。
+
+适合做"工具链"里的智能环节。比如一个数据分析 Server，中间需要 LLM 总结一下趋势，就可以通过 Sampling 让 Host 的 LLM 来做。
+
+### Roots：上下文感知
+
+Client 可以告诉 Server 当前的"工作根目录"。Server 据此调整行为，比如 filesystem server 只允许访问 roots 指定的目录。
+
+### Progress Reporting
+
+长时间运行的工具可以报告进度：
+
+```json
+{
+  "method": "notifications/progress",
+  "params": {"progressToken": 1, "progress": 0.5, "total": 1.0}
+}
+```
+
+客户端可以据此展示进度条。
+
+## 安全这事不能马虎
+
+MCP 把"工具调用"标准化了，但安全风险也随之标准化了。几个必须认真对待的点：
+
+**Server 端风险**：
+- 恶意 Server 提供虚假工具、窃取数据
+- 工具返回里注入 prompt 注入攻击
+- Server 越权操作
+
+**Host 端防护**：
+- 白名单机制，只允许信任的 Server
+- 最小权限，每个 Server 只授权必需的资源
+- 敏感工具调用前人工确认
+- Server 在沙箱里运行
+
+**用户端意识**：
+- 只装信任来源的 Server
+- 定期检查 Server 的权限范围
+- 注意 Server 的环境变量（里面可能有 API Key）
+
+MCP 2025-03-26 规范引入了 OAuth 2.1 授权流程，远程 Server 的身份认证和权限委托有了标准方案。
+
+## MCP vs 其他方案
+
+### MCP vs LangChain Tools
+
+| | LangChain Tools | MCP |
+|---|---|---|
+| 标准化 | 框架内部 | 开放行业标准 |
+| 跨框架 | LangChain 生态 | 通用 |
+| 部署 | 进程内 | 支持远程 |
+
+最佳实践是用 `langchain-mcp-adapters` 桥接。LangChain Agent 也能享受 MCP 生态。
+
+### MCP vs A2A
+
+MCP 处理 "Agent ↔ Tool"，A2A（Google 推的）处理 "Agent ↔ Agent"。两者是互补关系，不是竞争。
+
+## 实战：给公司知识库做个 MCP Server
+
+假设你们公司有个知识库目录，想通过 MCP 让 AI 应用能访问。
+
+```python
+from mcp.server.fastmcp import FastMCP
+from pathlib import Path
+import json
+
+mcp = FastMCP("knowledge-base")
+KB_DIR = Path("/data/knowledge_base")
+
+@mcp.tool()
+def search_documents(query: str, limit: int = 5) -> str:
+    """在公司知识库中搜索文档"""
+    results = []
+    for doc in KB_DIR.glob("*.md"):
+        content = doc.read_text()
+        if query.lower() in content.lower():
+            results.append({
+                "title": doc.stem,
+                "snippet": content[:200],
+            })
+            if len(results) >= limit:
+                break
+    return json.dumps(results, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+def read_document(title: str) -> str:
+    """读取指定标题的文档全文"""
+    doc_path = KB_DIR / f"{title}.md"
+    if not doc_path.exists():
+        return f"文档 '{title}' 不存在"
+    return doc_path.read_text()
+
+@mcp.tool()
+def list_documents() -> str:
+    """列出所有可用文档"""
+    return json.dumps([p.stem for p in KB_DIR.glob("*.md")])
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+写完可以用 MCP Inspector 测试，它提供一个 Web UI，能交互式调用所有工具：
+
+```bash
+npx @modelcontextprotocol/inspector python knowledge_base_server.py
+```
+
+## 一些学习资源
+
+- [MCP 官方规范](https://modelcontextprotocol.io/specification)
+- [MCP 文档站](https://modelcontextprotocol.io)
+- [Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+- [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)
+- [官方 Server 仓库](https://github.com/modelcontextprotocol/servers)
+- [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
+
+## 写在最后
+
+MCP 不只是一个协议，它是 AI 应用生态的基础设施。过去每个 AI 应用都要自己接工具，现在有了统一标准，工具的供给会爆发式增长。
+
+三条建议：
+
+**优先用 MCP 集成工具**。自己写的工具未来也能轻松接入别的 AI 应用，复用性极高。
+
+**安全放第一位**。白名单 + 最小权限 + 沙箱，一个都不能少。
+
+**拥抱生态**。Registry 上有几百个现成 Server，能复用就别自己写。为社区贡献你做的 Server，生态好了大家都受益。
+
+> *"MCP is to AI tools what HTTP is to the Web."*
+
+愿你能在这个新生态里，构建出连接万物的 AI 应用 🔌

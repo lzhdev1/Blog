@@ -1,0 +1,208 @@
+---
+title: "Context Engineering：LLM 时代真正重要的新学科"
+date: "2026-09-07"
+summary: "模型能力已经够用，瓶颈早就不在模型，而在你给模型看什么。Context Engineering 就是关于如何给 LLM 组装高质量上下文的系统工程。"
+tags: ["Context Engineering", "RAG", "LLM", "Agent", "AI"]
+categories: ["AI", "架构"]
+image: "/images/context-engineering-cover.png"
+draft: false
+---
+
+# Context Engineering：LLM 时代真正重要的新学科
+
+> *"It's not the model, it's the context."* — Toby Lütke
+
+2025 年中，Shopify CEO Toby Lütke 在推特上写了一句话："Context Engineering 才是最重要的新学科"。很快，Andrej Karpathy、Ethan Mollick 等一干大佬跟着响应。从此 Context Engineering 成了 AI 工程领域的新显学。
+
+做了一年 RAG 和 Agent 之后回头看，这句话是真说到点子上了。模型能力到 GPT-4 这个级别，大家用得都差不多。**真正拉开差距的，是你喂给模型的信息质量**。
+
+## 什么是 Context Engineering
+
+一句话：**设计和构建"送入 LLM 上下文窗口的所有信息"的工程学**。
+
+它包括的东西很多：
+
+- System prompt
+- 用户输入
+- Few-shot 示例
+- RAG 检索到的文档
+- 工具调用的返回结果
+- 历史对话 / 长期记忆
+- 结构化数据（用户画像、订单信息等）
+- 元数据（时间、地区、权限）
+
+Prompt engineering 关注的是"怎么说"，context engineering 关注的是"给模型看什么"。后者是更宏观、更系统的工程问题。
+
+## 为什么说上下文比模型重要
+
+一个经验公式：
+
+> 输出质量 = f(模型能力, 上下文质量)
+
+当模型能力到了某个阈值之后，上下文质量就是主要瓶颈。
+
+一个 70B 模型 + 完美上下文，往往好过一个 400B 模型 + 糟糕上下文。前者可能准确回答专业问题，后者可能连基础事实都搞错——不是因为模型笨，是因为它"看到的资料不对"。
+
+我自己踩过最深的坑就是：一开始拼命换模型，从 GPT-3.5 换到 GPT-4 再换到 Claude，效果始终不稳定。后来花两周优化了 RAG 的检索质量，所有指标都上来了。**模型没换，上下文变了**。
+
+## 上下文窗口的真实约束
+
+现在的模型窗口看起来都很大：GPT-4o 128K、Claude 3.5 Sonnet 200K、Gemini 1.5 Pro 2M、Qwen-Long 10M。但"能装"不等于"该装"。
+
+**成本随窗口线性增长**。200K token 的调用，比 10K 贵 20 倍。
+
+**延迟随窗口增长**。用户等得越久，满意度越低。
+
+**"Lost in the Middle" 效应**。模型对上下文中间部分的关注度明显下降，关键信息放在开头或结尾效果更好。
+
+所以"信噪比"比绝对长度重要得多。100 个 chunk 里 3 个相关，不如 5 个 chunk 全都相关。
+
+## RAG：上下文工程的基本功
+
+RAG（Retrieval-Augmented Generation）是上下文工程的基石。流程大家都熟：
+
+```
+用户问题 → 检索 → 拼到 prompt → LLM
+```
+
+但 Naive RAG 几乎都不好用。真正能打的 RAG，每一步都有讲究。
+
+**Query 改写**：用户问的往往不是最优检索 query。让 LLM 把一个问题改写成多个版本，并行检索后合并（Multi-Query），效果提升非常明显。
+
+**HyDE**：让 LLM 先编一个"假想答案"，用这个假想答案去检索。因为假想答案和真实文档的分布更接近，命中率会比直接用问题高。
+
+**Contextual Retrieval**：Anthropic 提出来的。给每个 chunk 预处理时加一句"这段内容来自 XX 文档的 YY 章节，讲的是 ZZ"，然后再向量化。他们测试说检索失败率下降了 49%。
+
+**Rerank**：检索完之后，用 cross-encoder 对结果重排。这一步看起来多余，但实测能把准确率再提一档。
+
+**Agentic RAG**：把检索过程也交给 Agent 控制。它自己判断要不要检索、用什么 query、结果够不够、要不要再检索一次。
+
+```python
+from langchain.retrievers.multi_query import MultiQueryRetriever
+
+retriever = MultiQueryRetriever.from_llm(
+    vectorstore.as_retriever(), chat
+)
+```
+
+切块参数比向量库选型重要——这是我另一个体会。`chunk_size`、`chunk_overlap`、分隔符顺序，这三个调好了，效果能差一大截。
+
+## 记忆系统：短期、长期、工作
+
+Agent 场景下，context 还包括各种"记忆"。
+
+**短期记忆**就是当前对话的消息列表。做点滑动窗口或者摘要压缩，别让它无限膨胀就行。
+
+**长期记忆**是跨会话持久化的知识，比如用户偏好、历史行为、事实知识。Mem0、Letta、Zep 这三个开源方案都可以看看。
+
+**工作记忆**是 Agent 在执行任务时的临时状态——当前目标、计划、中间结果。LangGraph 的 State 就是干这个的。
+
+把这三层分开设计，Agent 的表现会稳很多。
+
+## 工具的返回也是上下文
+
+一个经常被忽略的点：**工具的返回值，会进入下一轮 LLM 的上下文**。所以工具返回的内容也要精心控制。
+
+一个搜索工具如果返回 10 个网页全文，token 直接爆炸。更好的做法是让工具返回摘要，或者让 LLM 自己决定要读哪个网页的全文。
+
+工具数量也要控制。一个 Agent 的工具数最好别超过 20 个，再多模型选择就乱了。
+
+## 结构化数据和元数据
+
+很多人只关注"非结构化上下文"（文档、对话），忘了结构化数据也是 context 的重要部分。
+
+```python
+context = {
+    "user": {"name": "Alice", "plan": "premium", "usage": 42},
+    "current_time": "2026-09-07 14:30",
+    "feature_flags": {"new_ui": True},
+}
+```
+
+把用户信息、当前时间、功能开关这些"环境信息"注入 context，LLM 的回答会准确很多。
+
+## 高级玩法
+
+### Multi-Stage Context Assembly
+
+分阶段组装上下文：
+
+1. 用户输入 → 意图识别
+2. 意图 → 选择检索策略
+3. 检索 → 相关性过滤
+4. 组装 → 填充模板
+5. 发送 → LLM
+
+每一阶段都是一个独立的可调试单元。
+
+### Context Compression
+
+上下文太长时，先用一个小模型压缩，再送给大模型。比如检索回来 50 个 chunk，让小模型把每个压缩成一段摘要，再交给大模型回答。成本是多了个调用，但主模型的 token 节省巨大。
+
+### Graph-Based Context
+
+知识图谱增强。对于"关系型"问题（"这个公司 CEO 的母校"），用知识图谱检索比向量检索准得多。微软的 GraphRAG 是这个方向的代表。
+
+### Adaptive Context
+
+根据问题难度动态调整上下文深度。简单问题给少量 context，复杂问题做深度检索和多轮精化。既省成本又保证质量。
+
+## 上下文工程的系统化
+
+做生产系统时，context 不能是"每次都临时拼"，而要当成一个完整的数据管线。
+
+```
+输入预处理 → 多路检索 → 融合 + Rerank → 压缩 + 裁剪 → 模板组装 → 质量检查 → LLM
+```
+
+每一个环节都应该可追踪、可评估、可调优。
+
+### 评估指标
+
+- **Relevance**：检索的内容和问题相关吗
+- **Coverage**：覆盖了回答所需的所有信息吗
+- **Conciseness**：有没有冗余
+- **Faithfulness**：LLM 真的基于 context 回答了吗，还是瞎编
+- **Citation Quality**：引用准确吗
+
+RAGAS 和 TruLens 是目前用得比较多的评估工具。
+
+### 缓存
+
+上下文构建成本高昂，相同 query 直接复用上次构建的 context：
+
+```python
+@lru_cache(maxsize=1000)
+def build_context(query_hash: str) -> str:
+    return expensive_context_assembly(query_hash)
+```
+
+Claude 的 Prompt Caching、OpenAI 的 Cached Tokens 是模型厂商提供的原生方案，该用就用。
+
+### 可观测性
+
+每次请求的 context 都要能回溯。哪几个 chunk 被检索了、哪几个被过滤了、最终 token 多少、构建耗时多长——这些信息一定要留下。不然出了 bug 完全没法排查。
+
+## 几条心法
+
+做了一段时间 context engineering 之后，我总结出几条比较稳定的原则：
+
+**信噪比大于信息量**。100 个相关度参差不齐的 chunk，不如 5 个高相关 chunk。
+
+**结构决定上限**。同样的信息，不同组织方式，模型表现差异巨大。开头结尾放重点、中间放补充，是有道理的。
+
+**可观测性是前提**。看不见 context 里有什么，就谈不上优化。
+
+**评估驱动迭代**。建立评测集，量化每次改进的效果。没有数字支撑的"优化"都是自我安慰。
+
+**把 context 当产品做**。它不是技术细节，是产品的核心竞争力。
+
+## 一些学习资源
+
+- Anthropic 的 Contextual Retrieval 博客，必读
+- LangChain 和 LlamaIndex 的 RAG 教程
+- RAGAS 论文和文档
+- 微软的 GraphRAG 项目
+- Andrej Karpathy 关于 context engineering 的访谈
+
+愿你在上下文的世界里，构建出真正聪明的 LLM 应用 🌟

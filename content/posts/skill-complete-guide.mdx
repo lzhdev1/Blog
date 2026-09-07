@@ -1,0 +1,417 @@
+---
+title: "Skill：AI Agent 的能力抽象之道"
+date: "2026-09-07"
+summary: "工具太细，Agent 太粗，Skill 是中间那一层恰到好处的抽象。这篇聊聊 Skill 是什么、怎么设计、怎么组合，以及为什么它是构建大型 Agent 系统的关键。"
+tags: ["Skill", "Agent", "Claude Code", "模块化", "AI"]
+categories: ["AI", "架构"]
+image: "/images/skill-cover.png"
+draft: false
+---
+
+# Skill：AI Agent 的能力抽象之道
+
+> *"Skills are to Agents what functions are to programs."*
+
+做 Agent 做到后面，你会遇到一个很现实的问题：Agent 能力越做越多，代码越来越乱，一个 Agent 里塞了几十个工具，prompt 长得模型都读不完。
+
+这时候你就需要 **Skill（技能）** 这个抽象层了。
+
+## 什么是 Skill
+
+一句话：**Skill 是一个自包含、可复用、有明确输入输出的能力单元**。
+
+它封装了完成某一类任务所需的规划、工具调用、判断推理、错误处理、最佳实践。对外只暴露输入和输出，内部细节对调用者透明。
+
+举个例子：
+
+- `search_web` 是 **Tool**（原子操作）
+- "调研并写一份带引用的研究报告" 是 **Skill**（任务级）
+- "研究助手" 是 **Agent**（完整系统）
+
+一个类比：
+
+- Tool = 锤子、螺丝刀
+- Skill = "组装一张桌子"（用多种工具完成的一个完整小任务）
+- Agent = 木匠（按需调用各种 Skill 完成复杂项目）
+
+## 为什么需要 Skill 这一层
+
+**Tool 太细**。一个 `search_web` 工具做不了"调研并写报告"这件事，你需要编排多个工具、加判断、加 prompt 模板——这些组合逻辑放在哪？放在 Agent 主流程里，Agent 很快会爆炸。
+
+**Agent 太粗**。把"写研究报告"这种能力和"代码审查"都塞到一个 Agent 里，prompt 会变得无比复杂，模型容易分心。
+
+**Skill 刚好**。每个 Skill 专注做好一件事，可以被主 Agent 按需调用，也可以跨 Agent 复用。
+
+## Skill 的设计原则
+
+### 单一职责
+
+一个 Skill 只做一件事。"代码审查" 是一个 Skill，"写单元测试" 是另一个，"数据库迁移" 又是一个。
+
+别做那种"既能审代码、又能写邮件、还能查数据库"的万能 Skill。那不叫 Skill，叫 Frankenstein。
+
+### 封装抽象
+
+对外只暴露：
+- 输入参数
+- 输出结构
+- 使用描述（什么时候用，什么时候不用）
+
+内部怎么思考、用哪些工具、怎么处理错误，调用者不需要知道。
+
+### 可组合
+
+多个 Skill 可以像乐高一样拼起来：
+
+```
+研究 Skill + 写作 Skill + 排版 Skill = 研究报告生成系统
+```
+
+### 可共享
+
+Skill 可以跨 Agent 复用，可以在团队内共享，可以发到社区给别人用。这是它最大的价值之一。
+
+## Skill 长什么样
+
+一个完整的 Skill 通常包含这些部分：
+
+```yaml
+name: code-review
+version: 1.2.0
+description: 对代码进行深度审查，发现潜在问题
+
+input:
+  code: string        # 必填
+  language: string    # 可选
+  focus: enum         # 可选：bugs/security/performance/all
+
+output:
+  issues: list[Issue]
+  suggestions: list[string]
+  score: float
+
+tools:
+  - file_reader
+  - linter
+  - security_scanner
+
+prompt_template: file://./prompt.md
+```
+
+核心是 **prompt 模板**，它定义了这个 Skill 的行为模式：
+
+```markdown
+# 代码审查 Skill
+
+## 角色
+你是一位资深代码审查员。
+
+## 任务
+审查用户提供的代码，找出问题并给出改进建议。
+
+## 审查维度
+1. 正确性（Bug、边界条件）
+2. 安全性（注入、泄漏）
+3. 性能（时间复杂度、资源使用）
+4. 可读性（命名、结构）
+5. 最佳实践（惯用法、反模式）
+
+## 输出格式
+对每个问题标注位置、类别（🔴严重 / 🟡中等 / 🟢轻微）、描述、建议。
+最后给一个整体评分。
+
+## 工作流
+1. 通读代码，理解意图
+2. 用 linter 工具获取静态分析
+3. 逐行审查，标注问题
+4. 汇总报告
+```
+
+## 几种实现方式
+
+### 基于 Prompt 的 Skill（声明式）
+
+最简单的形式：一个 Markdown 文件。Claude Code 的 Skill 就是这种。
+
+```markdown
+---
+name: deploy
+description: 部署应用到生产环境
+---
+
+# 部署 Skill
+
+执行以下步骤：
+1. 检查 Git 状态
+2. 运行测试
+3. 构建生产包
+4. 部署到 Vercel
+5. 验证
+6. 发 Slack 通知
+
+如果任何步骤失败，停止并报告。
+```
+
+放到 `.claude/skills/deploy.md`，Claude Code 就能识别并调用。
+
+### 基于代码的 Skill（命令式）
+
+需要更精细控制时，用代码实现：
+
+```python
+from langchain_openai import ChatOpenAI
+
+class CodeReviewSkill:
+    name = "code_review"
+    description = "深度审查代码，发现问题"
+
+    def __init__(self):
+        self.llm = ChatOpenAI(model="gpt-4o")
+        self.tools = [linter, security_scanner]
+
+    async def run(self, code: str) -> dict:
+        lint_result = await linter.arun(code)
+        review = await self.llm.ainvoke([
+            ("system", SYSTEM_PROMPT),
+            ("human", f"代码：\n{code}\n\nLint 结果：\n{lint_result}"),
+        ])
+        return parse_review(review.content)
+```
+
+### LangGraph Subgraph
+
+把 Skill 实现为子图，适合复杂场景：
+
+```python
+from langgraph.graph import StateGraph
+
+def build_code_review_skill():
+    graph = StateGraph(ReviewState)
+    graph.add_node("lint", lint_step)
+    graph.add_node("analyze", analyze_step)
+    graph.add_node("review", review_step)
+    graph.add_node("report", report_step)
+
+    graph.add_edge("lint", "analyze")
+    graph.add_edge("analyze", "review")
+    graph.add_edge("review", "report")
+
+    return graph.compile()
+```
+
+主 Agent 可以像调用函数一样调用这个子图。
+
+## Skill 的设计模式
+
+几种常见的 Skill 结构：
+
+### Pipeline（流水线）
+
+```
+输入 → Step1 → Step2 → Step3 → 输出
+```
+
+比如"数据清洗 Skill"：原始数据 → 去重 → 格式化 → 校验 → 干净数据。
+
+### Router（路由）
+
+```
+输入 → 分类 → Sub-Skill A / Sub-Skill B / Sub-Skill C
+```
+
+比如"客服 Skill"：用户问题进来，分类成技术问题、账单问题、投诉，分别交给对应的子 Skill。
+
+### Parallel（并行）
+
+```
+      ┌─ Sub-Skill A ─┐
+输入 ─┼─ Sub-Skill B ──┼─ 合并 → 输出
+      └─ Sub-Skill C ─┘
+```
+
+比如"多维度分析 Skill"：对一份数据并行跑财务分析、风险分析、市场分析，最后合并成综合报告。
+
+### Iterative（迭代）
+
+```
+初稿 → 评估 → 修改 → 再评估 → (通过则输出)
+```
+
+"写作优化 Skill"常用这种模式，让 Skill 自己审视、自己改进，直到达标。
+
+### Meta（元技能）
+
+根据输入动态决定调用哪些其他 Skill：
+
+```python
+class MetaSkill:
+    def run(self, task):
+        plan = self.planner.plan(task)
+        for step in plan:
+            skill = self.registry.get(step.skill_name)
+            step.result = skill.run(step.input)
+        return self.aggregator.aggregate(plan)
+```
+
+## 在主流框架中的实践
+
+### Claude Code
+
+Claude Code 对 Skill 有原生支持。Skill 以 Markdown 文件形式存在于 `.claude/skills/` 目录：
+
+```
+.claude/skills/
+├── deploy.md
+├── code-review.md
+├── write-tests.md
+└── database-migration.md
+```
+
+用户可以用 `/deploy` 触发，或者 Claude 根据上下文自动触发。
+
+### OpenAI Agents SDK
+
+OpenAI 把 Skill 建模为"Agent + Handoff"。每个 Skill 是一个专用 Agent，由主 Agent 协调：
+
+```python
+code_review_agent = Agent(
+    name="Code Reviewer",
+    instructions="你是代码审查专家...",
+    tools=[linter, scanner],
+)
+
+test_writer_agent = Agent(
+    name="Test Writer",
+    instructions="你是测试编写专家...",
+    tools=[test_runner],
+)
+
+orchestrator = Agent(
+    name="Dev Assistant",
+    instructions="按需调用专业 Agent",
+    handoffs=[code_review_agent, test_writer_agent],
+)
+```
+
+### LangGraph
+
+每个 Skill 是子图，组合起来就是完整的工作流：
+
+```python
+main_graph = StateGraph(MainState)
+main_graph.add_node("research", research_skill)
+main_graph.add_node("writing", writing_skill)
+main_graph.add_node("publishing", publishing_skill)
+main_graph.add_edge("research", "writing")
+main_graph.add_edge("writing", "publishing")
+```
+
+## Skill 的工程化管理
+
+Skill 多了之后，需要系统化管理。
+
+### Skill Registry
+
+集中注册所有可用 Skill：
+
+```python
+class SkillRegistry:
+    def __init__(self):
+        self.skills = {}
+
+    def register(self, skill):
+        self.skills[skill.name] = skill
+
+    def search(self, query: str):
+        return [s for s in self.skills.values()
+                if query.lower() in s.description.lower()]
+```
+
+### 版本管理
+
+Skill 也会演进，要有版本号和 changelog：
+
+```yaml
+name: code-review
+version: 2.1.0
+changelog:
+  - 2.1.0: 增加安全审查维度
+  - 2.0.0: 重构为多步骤流程
+```
+
+### 测试
+
+每个 Skill 都应该有测试：
+
+```python
+async def test_code_review_skill():
+    skill = CodeReviewSkill()
+
+    # 正常代码
+    result = await skill.run("def add(a, b): return a + b")
+    assert result.score >= 80
+
+    # 有问题的代码
+    bad_code = "eval(input())"
+    result = await skill.run(bad_code)
+    assert any(i.category == "security" for i in result.issues)
+```
+
+### 目录结构
+
+一个合理的 Skill 库组织：
+
+```
+skills/
+├── registry.yaml
+├── code/
+│   ├── code-review/
+│   │   ├── skill.yaml
+│   │   ├── prompt.md
+│   │   └── tests/
+│   ├── test-writer/
+│   └── refactor/
+├── data/
+│   ├── data-cleaner/
+│   └── sql-generator/
+└── research/
+    ├── web-researcher/
+    └── paper-summarizer/
+```
+
+## 几条心得
+
+做了一段时间 Skill 库之后，有几点体会挺深的。
+
+**命名和描述至关重要**。模型选择 Skill 完全看描述，描述写得含糊，模型就乱选。`process` 和 `clean_sales_data`，后者明显更好。
+
+**错误处理不能偷懒**。Skill 内部可能出错的地方太多了——工具失败、LLM 拒绝、格式错误。每个 Skill 都应该返回清晰的错误信息，而不是让错误冒泡到顶层。
+
+**可观测性要原生支持**。每个 Skill 跑完要输出 trace：输入摘要、中间步骤、输出摘要、耗时、token 数。没有 trace 的 Skill 在生产环境里就是黑盒。
+
+**不要过早优化**。一开始每个 Skill 写简单点，跑通了再优化。过度设计的 Skill 反而难维护。
+
+## Skill 的未来
+
+Skill 这个抽象层会越来越重要。几个趋势：
+
+- **标准化协议**：类似 MCP 的 Skill Description Protocol，让 Skill 跨框架互通
+- **Skill Marketplace**：像 App Store 一样的技能市场
+- **Self-Learning Skill**：从使用数据中自我优化
+- **Cross-Agent Sharing**：Agent 之间动态共享 Skill
+
+## 写在最后
+
+Skill 是 Agent 工程化的关键一步。它让你从"做一个巨大的 Agent"转向"组装一组专注的 Skill"。
+
+三条原则：
+
+**单一职责**。一个 Skill 做好一件事。
+
+**封装抽象**。对外简洁，对内丰富。
+
+**组合复用**。Skill 库的价值远大于单个 Skill。
+
+> *"Great agents aren't built from scratch — they're assembled from great skills."*
+
+愿你能构建出模块优雅、能力强大的 AI Agent 🎯
