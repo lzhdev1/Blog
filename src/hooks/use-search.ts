@@ -13,6 +13,7 @@ interface SearchIndexItem {
 }
 
 export function useSearch() {
+  // Search hook with Fuse.js
   const [index, setIndex] = useState<SearchIndexItem[]>([])
   const [fuse, setFuse] = useState<Fuse<SearchIndexItem> | null>(null)
   const [loading, setLoading] = useState(true)
