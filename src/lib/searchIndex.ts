@@ -44,7 +44,7 @@ export function buildSearchIndex(): SearchItem[] {
     title: project.title,
     description: project.description,
     tags: project.tags,
-    bodyText: stripMdx(project.content || ''),
+    bodyText: stripMdx(project.detailed || ''),
   }))
 
   return [...posts, ...projects]
