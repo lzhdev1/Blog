@@ -22,17 +22,31 @@ export default function ProjectsPage() {
       {projects.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {projects.map((project) => (
-            <Link
+            <div
               key={project.slug}
-              href={`/projects/${project.slug}`}
-              className="group block border border-gray-200 dark:border-gray-800 rounded-lg p-6 hover:border-blue-500 dark:hover:border-blue-400 hover:shadow-lg hover:shadow-blue-500/5 transition-all duration-300"
+              className="group border border-gray-200 dark:border-gray-800 rounded-lg px-6 pb-6 pt-[10px] hover:border-blue-500 dark:hover:border-blue-400 hover:shadow-lg hover:shadow-blue-500/5 transition-all duration-300"
             >
-              <h2 className="text-2xl font-bold mb-3 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                {project.title}
-              </h2>
-              <p className="text-gray-600 dark:text-gray-400 mb-4">
+              <Link
+                href={`/projects/${project.slug}`}
+                className="block group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors"
+              >
+                <h2 className="text-2xl font-bold mb-3 mt-0">
+                  {project.title}
+                </h2>
+              </Link>
+              <Link
+                href={`/projects/${project.slug}`}
+                className="block text-gray-600 dark:text-gray-400 mb-4 hover:text-gray-900 dark:hover:text-gray-200 transition-colors"
+                style={{
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                  lineHeight: '1.5',
+                }}
+              >
                 {project.description}
-              </p>
+              </Link>
 
               {/* Tags */}
               {project.tags.length > 0 && (
@@ -52,9 +66,11 @@ export default function ProjectsPage() {
               <div className="flex items-center justify-between">
                 <div className="flex gap-4">
                   {project.link && (
-                    <span
-                      onClick={(e) => e.preventDefault()}
-                      className="inline-flex items-center text-sm text-blue-500"
+                    <a
+                      href={project.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center text-sm text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                     >
                       <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path
@@ -65,10 +81,15 @@ export default function ProjectsPage() {
                         />
                       </svg>
                       在线预览
-                    </span>
+                    </a>
                   )}
                   {project.github && (
-                    <span className="inline-flex items-center text-sm text-gray-600 dark:text-gray-400">
+                    <a
+                      href={project.github}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 transition-colors"
+                    >
                       <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 24 24">
                         <path
                           fillRule="evenodd"
@@ -77,17 +98,17 @@ export default function ProjectsPage() {
                         />
                       </svg>
                       源代码
-                    </span>
+                    </a>
                   )}
                 </div>
-                <span className="text-sm text-gray-400 dark:text-gray-500 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors flex items-center">
+                <Link href={`/projects/${project.slug}`} className="text-sm text-gray-400 dark:text-gray-500 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors flex items-center">
                   查看详情
                   <svg className="w-4 h-4 ml-1 transform group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
-                </span>
+                </Link>
               </div>
-            </Link>
+            </div>
           ))}
         </div>
       ) : (

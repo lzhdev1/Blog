@@ -38,7 +38,7 @@ export function getAboutData(): AboutData | null {
   const { data } = matter(fileContents)
 
   return {
-    name: data.name || 'Your Name',
+    name: data.name || 'LIzonghan',
     signature: data.signature || '',
     phone: data.phone || '',
     email: data.email || '',
