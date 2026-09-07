@@ -33,7 +33,7 @@ export function useSearch() {
           threshold: 0.3,
           includeScore: true,
         })
-        setFuse(fuseInstance)
+        setFuse(fuseInstance as Fuse<SearchIndexItem>)
         setLoading(false)
       })
       .catch((error) => {
