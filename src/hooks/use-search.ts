@@ -21,7 +21,7 @@ export function useSearch() {
     // Load search index
     fetch('/_search/index.json')
       .then((res) => res.json())
-      .then((data) => {
+      .then((data: SearchIndexItem[]) => {
         setIndex(data)
         const fuseInstance = new Fuse(data, {
           keys: [
